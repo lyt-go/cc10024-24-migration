@@ -29,12 +29,22 @@ def _complete_batch_to_history(entry: dict[str, Any]) -> None:
         "updated_at": persist.now_iso(),
     }
     run_rows.append(record)
-    persist.append_jsonl("runs", "run_history.jsonl", {
+    event = {
         "module": "run_history", "entity": "运行记录", "entry_id": new_id,
         "status": "已完成", "version": "", "action": "auto_create_from_batch",
         "timestamp": persist.now_iso(), "abnormal": False,
         "source_module": "batch_queue", "source_id": entry.get("id"),
-    })
+    }
+    # 登记实际确认的采集回执，并把本次确认固定为该运行事件的唯一确认来源。
+    try:
+        from app import run_store
+        confirm_ref = run_store.register_batch_receipt(
+            batch=entry, run_row=record, event=event)
+        if confirm_ref:
+            event["confirm_ref"] = confirm_ref
+    except Exception:
+        pass
+    persist.append_jsonl("runs", "run_history.jsonl", {**event, "_dual_written": True})
 
 register_hook("batch_queue", "确认完成", _complete_batch_to_history)
 
@@ -54,8 +64,9 @@ class BatchQueueService(BaseModuleService):
         batches = store.rows(self.MODULE)
         total_tasks = sum(int(r.get("任务数量", 0)) for r in batches)
         base["total_tasks"] = total_tasks
-        # 关联的run_history
-        runs = persist.read_jsonl("runs", "run_history.jsonl")
+        # 关联的run_history（兼容读取，迁移期间也只看一份）
+        from app import run_store
+        runs = run_store.visible_events()["events"]
         batch_runs = [r for r in runs if "batch" in str(r.get("action", ""))]
         base["batch_runs"] = len(batch_runs)
         # 关联的error_recover

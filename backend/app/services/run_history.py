@@ -60,11 +60,32 @@ class RunHistoryService(BaseModuleService):
     NEGATIVE_ACTIONS = []
 
     def get_recent_runs(self, limit: int = 20) -> list[dict[str, Any]]:
-        """获取最近的运行记录，优先从JSONL文件读取完整历史。"""
-        file_runs = persist.read_jsonl("runs", "run_history.jsonl")
+        """获取最近的运行记录。
+
+        走运行存储兼容层：迁移进行中/完成后会并入 SQLite 侧事件，并按事件
+        身份去重，保证同一个事件不会被读成两份。
+        """
+        from app import run_store
+
+        view = run_store.visible_events()
+        combined = [
+            {
+                "module": event.get("module") or self.MODULE,
+                "entity": event.get("entity") or self.ENTITY,
+                "entry_id": event.get("entry_id"),
+                "status": event.get("status"),
+                "version": event.get("version", ""),
+                "action": event.get("action", ""),
+                "timestamp": event.get("timestamp", ""),
+                "abnormal": bool(event.get("abnormal")),
+                "origin": event.get("origin"),
+                "legacy_position": event.get("legacy_origin"),
+                "confirm_ref": event.get("confirm_ref"),
+            }
+            for event in view["events"]
+        ]
         memory_runs = store.rows(self.MODULE)
-        # 合并内存和文件中的记录，按时间排序
-        combined = file_runs[-limit:] + [
+        combined += [
             {
                 "module": self.MODULE,
                 "entity": self.ENTITY,
@@ -74,16 +95,23 @@ class RunHistoryService(BaseModuleService):
                 "action": r.get("status", ""),
                 "timestamp": r.get("updated_at", ""),
                 "abnormal": r.get("abnormal", False),
+                "origin": "memory",
             } for r in memory_runs
         ]
         return combined[-limit:]
 
     def domain_snapshot(self) -> dict[str, Any]:
         base = super().domain_snapshot()
-        # 文件中的运行记录
-        file_runs = persist.read_jsonl("runs", "run_history.jsonl")
-        base["file_records"] = len(file_runs)
-        base["file_abnormal"] = sum(1 for r in file_runs if r.get("abnormal"))
+        # 文件中的运行记录（兼容读取，已按事件身份去重）
+        from app import run_store
+
+        view = run_store.visible_events()
+        base["file_records"] = view["jsonl_count"]
+        base["file_abnormal"] = sum(
+            1 for r in view["events"] if r.get("abnormal"))
+        base["visible_records"] = view["count"]
+        base["sqlite_records"] = view["sqlite_count"]
+        base["duplicates_suppressed"] = view["duplicates_suppressed"]
         # 关联的去重报告
         dedup_reports = persist.read_jsonl("reports", "dedup_report.jsonl")
         base["triggered_dedup"] = len([r for r in dedup_reports if r.get("trigger") == "run_history_confirm"])

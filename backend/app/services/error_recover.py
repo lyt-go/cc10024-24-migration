@@ -29,12 +29,21 @@ def _record_recovery_to_history(entry: dict[str, Any]) -> None:
         "updated_at": persist.now_iso(),
     }
     run_rows.append(record)
-    persist.append_jsonl("runs", "run_history.jsonl", {
+    event = {
         "module": "run_history", "entity": "运行记录", "entry_id": new_id,
         "status": "运行中", "version": "", "action": "auto_create_from_recovery",
         "timestamp": persist.now_iso(), "abnormal": False,
         "source_module": "error_recover", "source_id": entry.get("id"),
-    })
+    }
+    # 恢复确认同样绑定唯一来源；状态为「运行中」，不登记批次回执。
+    try:
+        from app import run_store
+        confirm_ref = run_store.register_recovery_event(run_row=record, event=event)
+        if confirm_ref:
+            event["confirm_ref"] = confirm_ref
+    except Exception:
+        pass
+    persist.append_jsonl("runs", "run_history.jsonl", {**event, "_dual_written": True})
 
 register_hook("error_recover", "确认恢复", _record_recovery_to_history)
 
@@ -56,8 +65,9 @@ class ErrorRecoverService(BaseModuleService):
         batches = store.rows("batch_queue")
         plan_ids = {r.get("关联计划") for r in tasks}
         base["linked_batches"] = sum(1 for b in batches if b.get("关联计划") in plan_ids)
-        # 恢复关联的run_history
-        runs = persist.read_jsonl("runs", "run_history.jsonl")
+        # 恢复关联的run_history（兼容读取，已按事件身份去重）
+        from app import run_store
+        runs = run_store.visible_events()["events"]
         recovery_runs = [r for r in runs if "recover" in str(r.get("action", ""))]
         base["recovery_runs"] = len(recovery_runs)
         base["retry_total"] = sum(

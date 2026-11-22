@@ -16,8 +16,10 @@
 │   └── vite.config.ts        dev server 配置（open: false）
 ├── backend/                  FastAPI（Python） 后端
 │   ├── app/routers/resource.py  通用查询/导出/登记/动作接口
+│   ├── app/routers/migration.py 运行存储迁移/回填/对照接口
 │   ├── app/services/<key>.py    每个模块独立领域逻辑
 │   ├── app/services/base.py     共享服务骨架
+│   ├── app/run_store.py      JSONL → SQLite 运行存储迁移与兼容读取
 │   └── app/store.py          内存数据仓库与示例数据
 ├── .gitignore
 └── docker-compose.yml
@@ -68,6 +70,45 @@ npm run dev
 | 运行历史 | `run_history` | 运行记录 | 记录编号、关联计划、开始时间 |
 | Schema校验 | `schema_check` | Schema规则 | 规则编号、目标数据、字段名 |
 | 内容缓存 | `content_cache` | 缓存配置 | 配置编号、缓存类型、过期策略 |
+
+## 运行存储迁移（JSONL → SQLite）
+
+`data/runs/` 下的 JSONL 运行日志可以逐步迁入 `data/run_store.sqlite3`，
+迁移期间新旧两种部署都能读取，且同一个运行事件只算一次。
+
+迁移状态：`idle → backfilling → switch_pending → completed`，可停在
+`interrupted` / `failed`，也可 `rolled_back` 回到只读 JSONL。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/run-store/status` | 迁移阶段、游标、各类计数、重复事件键 |
+| `POST /api/run-store/migrate/start` | 冻结「迁移前」快照并开始回填 |
+| `POST /api/run-store/migrate/backfill?limit=N` | 从游标续跑 N 条，可 `interrupt_at_journal` 复现被打断 |
+| `POST /api/run-store/migrate/interrupt` / `resume` | 打断 / 重新启动（游标保留） |
+| `POST /api/run-store/migrate/finish` | 补齐缺口 → 冻结完成后快照 → 校验 |
+| `POST /api/run-store/migrate/rollback` | 回到旧部署可读视图（库内数据保留） |
+| `GET /api/run-store/events` | 兼容读取：新旧存储合并、按事件身份去重 |
+| `GET /api/run-store/ledger` | 运行历史事件对照：新录入事件 + 既有 JSONL 来源位置 |
+| `GET /api/run-store/compare` | 迁移前 / 进行中 / 完成后的可读事件与来源计数 |
+| `GET /api/run-store/verify` | 对齐校验：来源位置、重复键、批次回执缺口 |
+
+要点：
+
+- 存量事件按「日志文件 + 物理行号」记录来源位置，游标落库，重启后从断点续跑。
+- 存量行缺少的列（如老日志没有 `source_module` / `source_id`）写 `NULL`，
+  不补默认值；来源计数里体现为 `(unknown)`。
+- 迁移期间新产生的批次/恢复事件双写 JSONL 与 SQLite，以 `confirm_ref`
+  绑定唯一确认来源；批次确认另外登记 `batch_receipts` 采集回执。
+- 兼容读取在 `hybrid` 与 `sqlite_primary` 下都按事件键去重，失败恢复
+  和回滚期间不会把同一事件读成两份。
+
+测试：
+
+```bash
+cd backend
+.venv/bin/python tests/test_cross_module.py        # 原有跨模块流程
+.venv/bin/python tests/test_run_store_migration.py # 迁移 / 兼容读取 / 对照
+```
 
 ## 约定
 

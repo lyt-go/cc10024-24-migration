@@ -42,8 +42,18 @@ def read_json(sub: str, filename: str) -> dict[str, Any] | None:
 
 def append_jsonl(sub: str, filename: str, record: dict[str, Any]) -> str:
     path = data_path(sub, filename)
+    # 以下划线开头的是写库控制标记，不落进 JSONL，保证旧部署读到的字段不变。
+    persisted = {k: v for k, v in record.items() if not k.startswith("_")}
     with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        f.write(json.dumps(persisted, ensure_ascii=False, default=str) + "\n")
+    if sub == "runs" and not record.get("_dual_written"):
+        # 运行存储迁移期间双写：JSONL 保证旧部署可读，SQLite 侧按事件身份去重。
+        # 已经通过 run_store 登记过业务事件（回执/恢复）的记录不再重复写库。
+        try:
+            from app import run_store
+            run_store.record_live_event(record, journal=filename)
+        except Exception:  # 迁移层故障不能影响主流程写日志
+            pass
     return path
 
 

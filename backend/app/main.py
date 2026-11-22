@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers import ROUTERS
+from app import run_store
 from app.store import store
 
 app = FastAPI(title="网页行为采集与内容清洗平台", version="1.0.0")
@@ -32,6 +33,19 @@ def health() -> dict[str, object]:
 def overview() -> dict[str, object]:
     """运营概览：把各业务模块的待处理量汇总成看板卡片。"""
     return store.overview()
+
+
+@app.get("/api/run-store/summary")
+def run_store_summary() -> dict[str, object]:
+    """运行存储一句话状态：迁移阶段、读取模式、可读事件数。"""
+    view = run_store.visible_events()
+    return {
+        "status": view["status"],
+        "read_mode": view["read_mode"],
+        "visible_events": view["count"],
+        "source_counts": view["source_counts"],
+        "duplicates_suppressed": view["duplicates_suppressed"],
+    }
 
 
 # 资源路由含 /api/{module}，必须放在 health / overview 之后注册，

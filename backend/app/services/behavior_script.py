@@ -62,8 +62,9 @@ class BehaviorScriptService(BaseModuleService):
             s: sum(1 for r in linked_schedules if r.get("status") == s)
             for s in ["草稿", "待校验", "运行中", "已暂停"]
         }
-        # 读取运行历史数据
-        runs = persist.read_jsonl("runs", "run_history.jsonl")
+        # 读取运行历史数据（兼容读取，迁移期间也只看一份）
+        from app import run_store
+        runs = run_store.visible_events()["events"]
         base["total_runs"] = len(runs)
         base["failed_runs"] = sum(1 for r in runs if r.get("abnormal"))
         return base
